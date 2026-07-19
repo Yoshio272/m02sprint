@@ -481,10 +481,12 @@ $("imgFile").addEventListener("change", ev => {
 $("printBtn").addEventListener("click", doPrint);
 $("feedBtn").addEventListener("click", doFeed);
 
-/* ========= 起動時：URLパラメータからテキスト受取 ========= */
+/* ========= 起動時：URLパラメータからテキスト受取（?text= と #text= 両対応） ========= */
 (function init() {
-  const q = new URLSearchParams(location.search);
-  const t = q.get("text");
+  let t = new URLSearchParams(location.search).get("text");
+  if (!t && location.hash.startsWith("#text=")) {
+    try { t = decodeURIComponent(location.hash.slice(6)); } catch (e) { t = location.hash.slice(6); }
+  }
   if (t) {
     textEl.value = t;
     setStatus("メモの内容を読み込みました。「接続して印刷」をタップしてください。", "ok");
