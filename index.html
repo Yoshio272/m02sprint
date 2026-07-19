@@ -162,6 +162,7 @@
 
   <div class="actions">
     <button class="primary" id="printBtn">接続して印刷</button>
+    <button class="sub" id="pasteBtn">貼り付け</button>
     <button class="sub" id="feedBtn">紙送り</button>
   </div>
   <progress id="prog" max="100" value="0"></progress>
@@ -480,16 +481,41 @@ $("imgFile").addEventListener("change", ev => {
 });
 $("printBtn").addEventListener("click", doPrint);
 $("feedBtn").addEventListener("click", doFeed);
-
-/* ========= 起動時：URLパラメータからテキスト受取（?text= と #text= 両対応） ========= */
-(function init() {
-  let t = new URLSearchParams(location.search).get("text");
-  if (!t && location.hash.startsWith("#text=")) {
-    try { t = decodeURIComponent(location.hash.slice(6)); } catch (e) { t = location.hash.slice(6); }
+$("pasteBtn").addEventListener("click", async () => {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (t) {
+      imageMode = null;
+      textEl.value = t;
+      render();
+      setStatus("クリップボードから貼り付けました。", "ok");
+    } else {
+      setStatus("クリップボードが空です。");
+    }
+  } catch (e) {
+    setStatus("自動貼り付けできない環境です。入力欄を長押しして「ペースト」してください。");
   }
-  if (t) {
+});
+
+/* ========= 起動時：URLパラメータからテキスト受取（?text= / #text= 両対応・多重エンコード対応） ========= */
+(function init() {
+  let raw = new URLSearchParams(location.search).get("text");
+  const hasHash = location.hash.startsWith("#text=");
+  if (raw === null && hasHash) raw = location.hash.slice(6);
+  if (raw) {
+    let t = raw;
+    for (let i = 0; i < 3; i++) {  // 二重・三重エンコードでも復元
+      if (!/%[0-9A-Fa-f]{2}/.test(t)) break;
+      try {
+        const d = decodeURIComponent(t);
+        if (d === t) break;
+        t = d;
+      } catch (e) { break; }
+    }
     textEl.value = t;
     setStatus("メモの内容を読み込みました。「接続して印刷」をタップしてください。", "ok");
+  } else if (hasHash) {
+    setStatus("テキストが空で渡されました。ショートカットの「#text=」の直後に変数（URLエンコード済みのテキスト）が入っているか確認してください。", "err");
   }
   render();
 })();
