@@ -161,8 +161,8 @@
         <label for="density">濃度</label>
         <select id="density">
           <option value="1">薄い</option>
-          <option value="2" selected>標準</option>
-          <option value="3">濃い</option>
+          <option value="3" selected>標準</option>
+          <option value="5">濃い</option>
         </select>
       </div>
       <div class="field">
@@ -481,11 +481,18 @@ function buildPrintData() {
   const d = img.data;
   const bytes = [];
 
-  // ヘッダ：初期化・濃度係数(M02S=0x96)・濃度
-  const density = parseInt($("density").value, 10);
-  bytes.push(0x1B, 0x40);
-  bytes.push(0x1F, 0x11, 0x37, 0x96);
-  bytes.push(0x1F, 0x11, 0x02, density);
+  // ヘッダ：初期化・濃度設定（M02Sで効く形式が機種差あるため複数形式を送出。無効な形式は無視される）
+  const level = parseInt($("density").value, 10);   // 1..5
+  bytes.push(0x1B, 0x40);                            // ESC @ 初期化
+  // 形式A：Phomemo系 濃度係数(0x37)。levelを0x60〜0xC0程度にマップ
+  const energyA = Math.max(0x30, Math.min(0xFF, 0x40 + level * 0x28));
+  bytes.push(0x1F, 0x11, 0x37, energyA);
+  // 形式B：印字濃度(0x02)
+  bytes.push(0x1F, 0x11, 0x02, level);
+  // 形式C：ESC/POS 印字濃度 GS ( K（一部感熱機で有効）
+  bytes.push(0x1D, 0x28, 0x4B, 0x02, 0x00, 0x31, Math.min(0xFF, level * 0x28));
+  // 形式D：DC2 # n（濃度段階）
+  bytes.push(0x12, 0x23, Math.min(0x0F, level));
 
   // 上余白 約1cm（先頭に空白ラスターを1ブロック入れる。feedより確実に紙頭に余白が付く）
   const TOP_MARGIN = 120; // 120dot ≒ 1cm @300dpi(12dot/mm)
