@@ -128,10 +128,12 @@
       <div class="field">
         <label for="fontSize">文字</label>
         <select id="fontSize">
+          <option value="20">極小</option>
           <option value="26">小</option>
           <option value="34" selected>中</option>
           <option value="46">大</option>
           <option value="60">特大</option>
+          <option value="76">極大</option>
         </select>
       </div>
       <div class="field">
@@ -147,6 +149,14 @@
           <option value="1">薄い</option>
           <option value="2" selected>標準</option>
           <option value="3">濃い</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="margin">後余白</label>
+        <select id="margin">
+          <option value="1" selected>最小</option>
+          <option value="3">標準</option>
+          <option value="5">多め</option>
         </select>
       </div>
       <label class="filebtn" for="imgFile">画像を選ぶ</label>
@@ -263,8 +273,8 @@ function wrapLines(ctx, text, maxWidth) {
 function renderText() {
   const size = parseInt($("fontSize").value, 10);
   const weight = $("bold").value;
-  const pad = 10;
-  const lineH = Math.round(size * 1.35);
+  const pad = 4;
+  const lineH = Math.round(size * 1.3);
   const font = `${weight} ${size}px "Meiryo UI", Meiryo, "Hiragino Sans", sans-serif`;
 
   pctx.font = font;
@@ -369,8 +379,9 @@ function buildPrintData() {
     }
   }
 
-  // 紙送り + フッタ（状態問い合わせで完了待ちを兼ねる）
-  bytes.push(0x1B, 0x64, 0x03);
+  // 紙送り（設定値） + フッタ（状態問い合わせで完了待ちを兼ねる）
+  const feed = parseInt($("margin").value, 10);
+  bytes.push(0x1B, 0x64, feed);
   bytes.push(0x1F, 0x11, 0x08,  0x1F, 0x11, 0x0E,
              0x1F, 0x11, 0x07,  0x1F, 0x11, 0x09);
 
