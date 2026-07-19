@@ -203,12 +203,27 @@ const BLOCK_ROWS    = 200;               // ラスターブロックの行数
 const CHUNK_SIZE    = 128;               // BLE分割送信サイズ
 const CHUNK_WAIT_MS = 20;                // writeWithoutResponse時の待機
 
-// Phomemo系・感熱プリンタで使われるBLEサービス候補（接続後に書込可能な特性を自動探索）
+// Phomemo系・感熱プリンタで使われるBLEサービス候補（Bluefy互換のため128bit文字列表記のみ）
 const CANDIDATE_SERVICES = [
-  0xFF00, 0xFF80, 0xFFE0, 0xFFF0, 0xFFE5, 0x18F0,
+  "0000ff00-0000-1000-8000-00805f9b34fb",
+  "0000ff80-0000-1000-8000-00805f9b34fb",
+  "0000ffe0-0000-1000-8000-00805f9b34fb",
+  "0000fff0-0000-1000-8000-00805f9b34fb",
+  "0000ffe5-0000-1000-8000-00805f9b34fb",
+  "000018f0-0000-1000-8000-00805f9b34fb",
   "0000ae30-0000-1000-8000-00805f9b34fb",
   "49535343-fe7d-4ae5-8fa9-9fafd205e455",
   "e7810a71-73ae-499d-8c15-faa9aef0c3f2"
+];
+// 書き込み特性の候補（直接取得用・優先順）
+const CANDIDATE_WRITE_CHARS = [
+  "0000ff02-0000-1000-8000-00805f9b34fb",
+  "0000ae01-0000-1000-8000-00805f9b34fb",
+  "0000fff2-0000-1000-8000-00805f9b34fb",
+  "0000ffe1-0000-1000-8000-00805f9b34fb",
+  "0000ffe9-0000-1000-8000-00805f9b34fb",
+  "00002af1-0000-1000-8000-00805f9b34fb",
+  "49535343-8841-43f4-a8d4-ecbe34729bb3"
 ];
 // 書き込み特性として優先するUUID（下4桁）
 const PREFERRED_WRITE = ["ff02", "ae01", "fff2", "ffe1", "2af1", "ffe9",
@@ -219,6 +234,7 @@ let imageMode = null;   // 選択された画像(Image) or null=テキストモ�
 let btDevice = null;
 let writeChar = null;
 let writeMode = null;   // "noresp" | "resp"
+let stage = "";         // 進行段階（エラー箇所特定用）
 
 const $ = id => document.getElementById(id);
 const textEl = $("text");
@@ -375,6 +391,7 @@ async function connect() {
     throw new Error("このブラウザはWeb Bluetooth非対応です。iPhoneはBluefy、PCはChromeを使用してください。");
   }
 
+  stage = "機器選択";
   setStatus("プリンタを選択してください…（一覧に出るまで数秒かかります）");
   btDevice = await navigator.bluetooth.requestDevice({
     acceptAllDevices: true,
@@ -382,27 +399,53 @@ async function connect() {
   });
   btDevice.addEventListener("gattserverdisconnected", () => { writeChar = null; });
 
+  stage = "GATT接続";
   setStatus("接続中…");
   const server = await btDevice.gatt.connect();
-  setStatus("通信方式を確認中…");
 
-  // 書き込み可能な特性を自動探索（診断情報も収集）
+  stage = "サービス探索";
+  setStatus("通信方式を確認中…");
   writeChar = null;
   const diag = [];
   const found = []; // {ch, uuid, noresp}
-  let services = [];
-  try { services = await server.getPrimaryServices(); } catch (e) {}
+
+  // 方法1：一括取得（対応ブラウザのみ）
+  let services = null;
+  try { services = await server.getPrimaryServices(); } catch (e) { services = null; }
+
+  // 方法2：候補サービスを個別取得（Bluefy等の限定実装向け）
+  if (!services || services.length === 0) {
+    services = [];
+    for (const su of CANDIDATE_SERVICES) {
+      try { services.push(await server.getPrimaryService(su)); } catch (e) {}
+    }
+  }
+
+  stage = "特性探索";
   for (const sv of services) {
-    let chars;
-    try { chars = await sv.getCharacteristics(); } catch (e) { continue; }
-    for (const ch of chars) {
-      const props = [];
-      if (ch.properties.write) props.push("w");
-      if (ch.properties.writeWithoutResponse) props.push("wnr");
-      if (ch.properties.notify) props.push("n");
-      diag.push(sv.uuid.slice(4, 8) + "/" + ch.uuid.slice(4, 8) + "(" + props.join(",") + ")");
-      if (ch.properties.write || ch.properties.writeWithoutResponse) {
-        found.push({ ch, uuid: ch.uuid, noresp: !!ch.properties.writeWithoutResponse });
+    // 方法1：特性を一括列挙
+    let chars = null;
+    try { chars = await sv.getCharacteristics(); } catch (e) { chars = null; }
+    if (chars && chars.length) {
+      for (const ch of chars) {
+        const p = ch.properties || {};
+        const props = [];
+        if (p.write) props.push("w");
+        if (p.writeWithoutResponse) props.push("wnr");
+        if (p.notify) props.push("n");
+        diag.push(sv.uuid.slice(4, 8) + "/" + ch.uuid.slice(4, 8) + "(" + props.join(",") + ")");
+        if (p.write || p.writeWithoutResponse) {
+          found.push({ ch, uuid: ch.uuid, noresp: !!p.writeWithoutResponse });
+        }
+      }
+    } else {
+      // 方法2：既知の書き込みUUIDを個別取得（プロパティ情報が無くても書込可とみなす）
+      for (const cu of CANDIDATE_WRITE_CHARS) {
+        try {
+          const ch = await sv.getCharacteristic(cu);
+          diag.push(sv.uuid.slice(4, 8) + "/" + cu.slice(4, 8) + "(直接)");
+          found.push({ ch, uuid: cu, noresp: true });
+        } catch (e) {}
       }
     }
   }
@@ -420,6 +463,7 @@ async function connect() {
   if (!pick) pick = found.find(f => f.noresp) || found[0];
   writeChar = pick.ch;
   writeMode = pick.noresp ? "noresp" : "resp";
+  stage = "送信";
 }
 
 async function bleWrite(chunk) {
@@ -465,7 +509,7 @@ async function doPrint() {
     if (e && e.name === "NotFoundError") {
       setStatus("キャンセルしました。（一覧に出ない場合は公式アプリ終了とプリンタ再起動を）");
     } else {
-      setStatus("エラー：" + errMsg(e), "err");
+      setStatus("エラー（" + stage + "）：" + errMsg(e), "err");
     }
   } finally {
     btn.disabled = false;
