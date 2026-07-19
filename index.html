@@ -304,20 +304,26 @@ const preview = $("preview");
 const pctx = preview.getContext("2d", { willReadFrequently: true });
 
 /* ========= プレビュー描画 ========= */
-function wrapLines(ctx, text, maxWidth) {
+function wrapLines(ctx, text, maxWidth, indent) {
   const lines = [];
+  const ind = indent || "";
+  const indW = ind ? ctx.measureText(ind).width : 0;
   for (const raw of text.split("\n")) {
     if (raw === "") { lines.push(""); continue; }
     let line = "";
+    let first = true;
     for (const ch of raw) {
       const test = line + ch;
-      if (line !== "" && ctx.measureText(test).width > maxWidth) {
-        lines.push(line); line = ch;
+      const limit = first ? maxWidth : maxWidth - indW;
+      if (line !== "" && ctx.measureText(test).width > limit) {
+        lines.push(first ? line : ind + line);
+        first = false;
+        line = ch;
       } else {
         line = test;
       }
     }
-    lines.push(line);
+    lines.push(first ? line : ind + line);
   }
   return lines;
 }
@@ -376,8 +382,8 @@ function renderText() {
     return;
   }
 
-  // 縦向き（標準）：48mm幅で自動折り返し
-  const lines = wrapLines(pctx, textEl.value || " ", PRINTER_WIDTH - pad * 2);
+  // 縦向き（標準）：48mm幅で自動折り返し（継続行は字下げ）
+  const lines = wrapLines(pctx, textEl.value || " ", PRINTER_WIDTH - pad * 2, "　");
   const h = Math.max(48, pad * 2 + lines.length * lineH);
   preview.height = h;
   pctx.fillStyle = "#FFFFFF";
@@ -481,6 +487,13 @@ function buildPrintData() {
   bytes.push(0x1F, 0x11, 0x37, 0x96);
   bytes.push(0x1F, 0x11, 0x02, density);
 
+  // 上余白 約1cm（先頭に空白ラスターを1ブロック入れる。feedより確実に紙頭に余白が付く）
+  const TOP_MARGIN = 120; // 120dot ≒ 1cm @300dpi(12dot/mm)
+  bytes.push(0x1D, 0x76, 0x30, 0x00,
+             BYTES_PER_ROW & 0xFF, (BYTES_PER_ROW >> 8) & 0xFF,
+             TOP_MARGIN & 0xFF, (TOP_MARGIN >> 8) & 0xFF);
+  for (let i = 0; i < BYTES_PER_ROW * TOP_MARGIN; i++) bytes.push(0x00);
+
   // ラスター画像（GS v 0）をブロック分割で
   for (let y0 = 0; y0 < h; y0 += BLOCK_ROWS) {
     const rows = Math.min(BLOCK_ROWS, h - y0);
@@ -500,7 +513,14 @@ function buildPrintData() {
     }
   }
 
-  // 紙送り（設定値。横向き時は自動で+2行追加） + フッタ（状態問い合わせで完了待ちを兼ねる）
+  // 下余白 約1cm（末尾に空白ラスターを1ブロック。単位が確実なラスターで余白を付ける）
+  const BOTTOM_MARGIN = 120; // 120dot ≒ 1cm
+  bytes.push(0x1D, 0x76, 0x30, 0x00,
+             BYTES_PER_ROW & 0xFF, (BYTES_PER_ROW >> 8) & 0xFF,
+             BOTTOM_MARGIN & 0xFF, (BOTTOM_MARGIN >> 8) & 0xFF);
+  for (let i = 0; i < BYTES_PER_ROW * BOTTOM_MARGIN; i++) bytes.push(0x00);
+
+  // 紙送り（設定値。横向き時はさらに+2行） + フッタ（状態問い合わせで完了待ちを兼ねる）
   const extraFeed = $("orient").value === "yoko" ? 2 : 0;
   const feed = parseInt($("margin").value, 10) + extraFeed;
   bytes.push(0x1B, 0x64, feed);
@@ -868,10 +888,29 @@ $("seqBtn").addEventListener("click", async () => {
     }
     textEl.value = t;
     setStatus("メモの内容を読み込みました。「接続して印刷」をタップしてください。", "ok");
+    render();
   } else if (hasHash) {
     setStatus("テキストが空で渡されました。ショートカットの「#text=」の直後に変数（URLエンコード済みのテキスト）が入っているか確認してください。", "err");
+    render();
+  } else if (location.hash === "#paste" || new URLSearchParams(location.search).has("paste")) {
+    // クリップボードから自動読み込み（ショートカット用）
+    render();
+    setStatus("クリップボードを読み込み中…");
+    navigator.clipboard.readText().then(t => {
+      if (t) {
+        imageMode = null; qrMode = null;
+        textEl.value = t;
+        render();
+        setStatus("メモの内容を読み込みました。「接続して印刷」をタップしてください。", "ok");
+      } else {
+        setStatus("クリップボードが空でした。「貼り付け」を押すか入力してください。");
+      }
+    }).catch(() => {
+      setStatus("自動読み込みできませんでした。「貼り付け」ボタンを押してください。");
+    });
+  } else {
+    render();
   }
-  render();
 })();
 </script>
 </body>
