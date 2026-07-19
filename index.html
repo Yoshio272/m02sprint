@@ -375,7 +375,7 @@ async function connect() {
     throw new Error("このブラウザはWeb Bluetooth非対応です。iPhoneはBluefy、PCはChromeを使用してください。");
   }
 
-  setStatus("プリンタを選択してください…");
+  setStatus("プリンタを選択してください…（一覧に出るまで数秒かかります）");
   btDevice = await navigator.bluetooth.requestDevice({
     acceptAllDevices: true,
     optionalServices: CANDIDATE_SERVICES
@@ -384,6 +384,7 @@ async function connect() {
 
   setStatus("接続中…");
   const server = await btDevice.gatt.connect();
+  setStatus("通信方式を確認中…");
 
   // 書き込み可能な特性を自動探索（診断情報も収集）
   writeChar = null;
@@ -421,21 +422,34 @@ async function connect() {
   writeMode = pick.noresp ? "noresp" : "resp";
 }
 
+async function bleWrite(chunk) {
+  // Bluefy等の旧API環境ではwriteValueのみ対応のためフォールバック
+  if (writeMode === "noresp" && writeChar.writeValueWithoutResponse) {
+    await writeChar.writeValueWithoutResponse(chunk);
+    await new Promise(r => setTimeout(r, CHUNK_WAIT_MS));
+  } else if (writeChar.writeValueWithResponse) {
+    await writeChar.writeValueWithResponse(chunk);
+  } else {
+    await writeChar.writeValue(chunk);
+    await new Promise(r => setTimeout(r, CHUNK_WAIT_MS));
+  }
+}
+
 async function sendData(data) {
   const prog = $("prog");
   prog.style.display = "block";
   for (let i = 0; i < data.length; i += CHUNK_SIZE) {
     const chunk = data.slice(i, i + CHUNK_SIZE);
-    if (writeMode === "noresp") {
-      await writeChar.writeValueWithoutResponse(chunk);
-      await new Promise(r => setTimeout(r, CHUNK_WAIT_MS));
-    } else {
-      await writeChar.writeValueWithResponse(chunk);
-    }
+    await bleWrite(chunk);
     prog.value = Math.round((i + chunk.length) / data.length * 100);
   }
   prog.style.display = "none";
   prog.value = 0;
+}
+
+function errMsg(e) {
+  if (!e) return "不明なエラー";
+  return e.message || e.name || String(e);
 }
 
 async function doPrint() {
@@ -448,10 +462,10 @@ async function doPrint() {
     await sendData(buildPrintData());
     setStatus("印刷データの送信が完了しました。", "ok");
   } catch (e) {
-    if (e.name === "NotFoundError") {
-      setStatus("キャンセルしました。");
+    if (e && e.name === "NotFoundError") {
+      setStatus("キャンセルしました。（一覧に出ない場合は公式アプリ終了とプリンタ再起動を）");
     } else {
-      setStatus("エラー：" + e.message, "err");
+      setStatus("エラー：" + errMsg(e), "err");
     }
   } finally {
     btn.disabled = false;
@@ -464,7 +478,7 @@ async function doFeed() {
     await sendData(new Uint8Array([0x1B, 0x40, 0x1B, 0x64, 0x02]));
     setStatus("紙送りしました。", "ok");
   } catch (e) {
-    if (e.name !== "NotFoundError") setStatus("エラー：" + e.message, "err");
+    if (!e || e.name !== "NotFoundError") setStatus("エラー：" + errMsg(e), "err");
   }
 }
 
