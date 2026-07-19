@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>M02S ダイレクト印刷</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
 <style>
   :root {
     --main: #2D5F8A;
@@ -56,11 +57,22 @@
   }
 
   .filebtn {
-    font-size: 12px; color: var(--main);
+    font-size: 12px; color: var(--main); font-family: inherit;
     border: 1px solid var(--main); border-radius: 6px;
     padding: 6px 10px; background: #FFF; cursor: pointer;
   }
   input[type="file"] { display: none; }
+  input[type="text"], input[type="number"] {
+    font-family: inherit; font-size: 14px; color: var(--gray);
+    padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #FFF;
+  }
+  .histItem {
+    display: block; width: 100%; text-align: left;
+    font-family: inherit; font-size: 13px; color: var(--gray);
+    background: var(--main-light); border: none; border-radius: 6px;
+    padding: 8px 10px; margin-top: 6px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
   #previewBox {
     background: var(--main-light);
@@ -128,12 +140,14 @@
       <div class="field">
         <label for="fontSize">文字</label>
         <select id="fontSize">
-          <option value="20">極小</option>
-          <option value="26">小</option>
-          <option value="34" selected>中</option>
-          <option value="46">大</option>
-          <option value="60">特大</option>
-          <option value="76">極大</option>
+          <option value="6">6pt</option>
+          <option value="8">8pt</option>
+          <option value="10" selected>10pt</option>
+          <option value="12">12pt</option>
+          <option value="14">14pt</option>
+          <option value="18">18pt</option>
+          <option value="24">24pt</option>
+          <option value="32">32pt</option>
         </select>
       </div>
       <div class="field">
@@ -166,6 +180,18 @@
           <option value="5">多め</option>
         </select>
       </div>
+      <div class="field">
+        <label for="template">定型</label>
+        <select id="template">
+          <option value="" selected>選択</option>
+          <option value="motidashi">持出票</option>
+          <option value="nifuda">荷札</option>
+          <option value="dengon">伝言メモ</option>
+          <option value="check">チェックリスト</option>
+        </select>
+      </div>
+      <button class="filebtn" id="dateBtn" type="button">日時挿入</button>
+      <button class="filebtn" id="qrBtn" type="button">QR化</button>
       <label class="filebtn" for="imgFile">画像を選ぶ</label>
       <input type="file" id="imgFile" accept="image/*">
     </div>
@@ -180,12 +206,28 @@
   <div class="actions">
     <button class="primary" id="printBtn">接続して印刷</button>
     <button class="sub" id="pasteBtn">貼り付け</button>
+    <button class="sub" id="clearBtn">クリア</button>
     <button class="sub" id="feedBtn">紙送り</button>
   </div>
   <progress id="prog" max="100" value="0"></progress>
   <div id="status"></div>
 
   <div class="card" style="margin-top:16px">
+    <h2>連番印刷</h2>
+    <div class="row" style="margin-top:0">
+      <div class="field"><label for="seqPrefix">接頭語</label><input type="text" id="seqPrefix" value="No." style="width:72px"></div>
+      <div class="field"><label for="seqStart">開始</label><input type="number" id="seqStart" value="1" style="width:64px"></div>
+      <div class="field"><label for="seqEnd">終了</label><input type="number" id="seqEnd" value="5" style="width:64px"></div>
+      <button class="filebtn" id="seqBtn" type="button">連番を印刷</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>履歴（タップで再読み込み）</h2>
+    <div id="historyList" class="help">（印刷するとここに残ります）</div>
+  </div>
+
+  <div class="card">
     <details>
       <summary>iPhone ショートカットの設定方法</summary>
       <div class="help">
@@ -247,7 +289,8 @@ const PREFERRED_WRITE = ["ff02", "ae01", "fff2", "ffe1", "2af1", "ffe9",
                          "49535343-8841-43f4-a8d4-ecbe34729bb3"];
 
 /* ========= 状態 ========= */
-let imageMode = null;   // 選択された画像(Image) or null=テキストモード
+let imageMode = null;   // 選択された画像(Image) or null
+let qrMode = null;      // QR化する文字列 or null（null時はテキストモード）
 let btDevice = null;
 let writeChar = null;
 let writeMode = null;   // "noresp" | "resp"
@@ -290,8 +333,11 @@ function binarize(h) {
   pctx.putImageData(img, 0, 0);
 }
 
+function isRule(s) { return /^[\-ー―‐]{3,}$/.test(s.trim()); }
+
 function renderText() {
-  const size = parseInt($("fontSize").value, 10);
+  const pt = parseFloat($("fontSize").value);
+  const size = Math.round(pt * 300 / 72);   // 300dpi: 1pt = 300/72 dot
   const weight = $("bold").value;
   const pad = 4;
   const lineH = Math.round(size * 1.3);
@@ -310,7 +356,11 @@ function renderText() {
     const octx = off.getContext("2d");
     octx.fillStyle = "#FFFFFF"; octx.fillRect(0, 0, offW, offH);
     octx.fillStyle = "#000000"; octx.font = font; octx.textBaseline = "top";
-    rawLines.forEach((ln, i) => octx.fillText(ln, pad, pad + i * lineH));
+    rawLines.forEach((ln, i) => {
+      const y = pad + i * lineH;
+      if (isRule(ln)) octx.fillRect(pad, y + Math.round(lineH / 2) - 2, offW - pad * 2, 3);
+      else octx.fillText(ln, pad, y);
+    });
 
     const scale = PRINTER_WIDTH / offH;          // 行数分の高さを48mm幅に合わせる
     const outH = Math.max(8, Math.round(offW * scale)); // 印刷長
@@ -335,7 +385,39 @@ function renderText() {
   pctx.fillStyle = "#000000";
   pctx.font = font;
   pctx.textBaseline = "top";
-  lines.forEach((ln, i) => pctx.fillText(ln, pad, pad + i * lineH));
+  lines.forEach((ln, i) => {
+    const y = pad + i * lineH;
+    if (isRule(ln)) pctx.fillRect(pad, y + Math.round(lineH / 2) - 2, PRINTER_WIDTH - pad * 2, 3);
+    else pctx.fillText(ln, pad, y);
+  });
+  binarize(h);
+  updateMeta(h);
+}
+
+function renderQR() {
+  if (!window.QRious) {
+    setStatus("QRライブラリの読み込みに失敗しました。通信環境を確認して再読み込みしてください。", "err");
+    qrMode = null; renderText(); return;
+  }
+  const content = qrMode;
+  const qsize = 384;
+  const tmp = document.createElement("canvas");
+  new QRious({ element: tmp, value: content, size: qsize, level: "M" });
+
+  const pad = 8;
+  const capSize = 26;
+  const capLineH = Math.round(capSize * 1.3);
+  const capFont = `${capSize}px "Meiryo UI", Meiryo, "Hiragino Sans", sans-serif`;
+  pctx.font = capFont;
+  const capLines = wrapLines(pctx, content, PRINTER_WIDTH - pad * 2).slice(0, 3);
+  const h = pad + qsize + 6 + capLines.length * capLineH + pad;
+
+  preview.height = h;
+  pctx.imageSmoothingEnabled = false;
+  pctx.fillStyle = "#FFFFFF"; pctx.fillRect(0, 0, PRINTER_WIDTH, h);
+  pctx.drawImage(tmp, (PRINTER_WIDTH - qsize) / 2, pad);
+  pctx.fillStyle = "#000000"; pctx.font = capFont; pctx.textBaseline = "top";
+  capLines.forEach((ln, i) => pctx.fillText(ln, pad, pad + qsize + 6 + i * capLineH));
   binarize(h);
   updateMeta(h);
 }
@@ -380,11 +462,11 @@ function renderImage() {
 
 function updateMeta(h) {
   const mm = (h / 12).toFixed(0); // 12dot/mm
-  $("previewMeta").textContent =
-    (imageMode ? "画像モード" : "テキストモード") + ` ｜ 印刷長 約${mm}mm`;
+  const mode = qrMode ? "QRモード" : (imageMode ? "画像モード" : "テキストモード");
+  $("previewMeta").textContent = mode + ` ｜ 印刷長 約${mm}mm`;
 }
 
-function render() { imageMode ? renderImage() : renderText(); }
+function render() { qrMode ? renderQR() : (imageMode ? renderImage() : renderText()); }
 
 /* ========= ESC/POS データ生成 ========= */
 function buildPrintData() {
@@ -418,8 +500,9 @@ function buildPrintData() {
     }
   }
 
-  // 紙送り（設定値） + フッタ（状態問い合わせで完了待ちを兼ねる）
-  const feed = parseInt($("margin").value, 10);
+  // 紙送り（設定値。横向き時は自動で+2行追加） + フッタ（状態問い合わせで完了待ちを兼ねる）
+  const extraFeed = $("orient").value === "yoko" ? 2 : 0;
+  const feed = parseInt($("margin").value, 10) + extraFeed;
   bytes.push(0x1B, 0x64, feed);
   bytes.push(0x1F, 0x11, 0x08,  0x1F, 0x11, 0x0E,
              0x1F, 0x11, 0x07,  0x1F, 0x11, 0x09);
@@ -585,6 +668,7 @@ async function doPrint() {
     await connect();
     setStatus("送信中…");
     await sendData(buildPrintData());
+    if (!imageMode) pushHistory(textEl.value.trim());
     setStatus("印刷データの送信が完了しました。", "ok");
   } catch (e) {
     if (e && e.name === "NotFoundError") {
@@ -607,25 +691,94 @@ async function doFeed() {
   }
 }
 
+/* ========= 設定の記憶・履歴（GitHub Pages上で有効） ========= */
+const SETTING_IDS = ["fontSize", "bold", "density", "margin", "orient"];
+function saveSettings() {
+  try {
+    const o = {};
+    SETTING_IDS.forEach(id => o[id] = $(id).value);
+    localStorage.setItem("m02s_settings", JSON.stringify(o));
+  } catch (e) {}
+}
+function loadSettings() {
+  try {
+    const o = JSON.parse(localStorage.getItem("m02s_settings") || "{}");
+    SETTING_IDS.forEach(id => { if (o[id] !== undefined) $(id).value = o[id]; });
+  } catch (e) {}
+}
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem("m02s_history") || "[]"); }
+  catch (e) { return []; }
+}
+function pushHistory(t) {
+  if (!t) return;
+  try {
+    let h = loadHistory().filter(x => x !== t);
+    h.unshift(t);
+    localStorage.setItem("m02s_history", JSON.stringify(h.slice(0, 10)));
+    renderHistory();
+  } catch (e) {}
+}
+function renderHistory() {
+  const el = $("historyList");
+  const h = loadHistory();
+  if (!h.length) { el.textContent = "（印刷するとここに残ります）"; return; }
+  el.innerHTML = "";
+  h.forEach(t => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "histItem";
+    b.textContent = t.length > 30 ? t.slice(0, 30) + "…" : t;
+    b.addEventListener("click", () => {
+      imageMode = null; qrMode = null;
+      textEl.value = t;
+      render();
+      setStatus("履歴から読み込みました。", "ok");
+    });
+    el.appendChild(b);
+  });
+}
+
+/* ========= 定型テンプレート ========= */
+const TEMPLATES = {
+  motidashi: "【持出票】\n日付：\n品名：\n数量：\n持出者：\n行先：\n返却予定：\n----------",
+  nifuda:    "【荷札】\n宛先：\n品名：\n数量：\n発送元：\n----------",
+  dengon:    "【伝言メモ】\n日時：\n　　　　様\n□ 電話がありました\n□ 折り返しください\n□ 再度連絡します\n用件：\n受付：\n----------",
+  check:     "【チェックリスト】\n□ \n□ \n□ \n□ \n□ \n----------"
+};
+
 /* ========= イベント ========= */
-textEl.addEventListener("input", () => { imageMode = null; render(); });
-$("fontSize").addEventListener("change", render);
-$("bold").addEventListener("change", render);
-$("orient").addEventListener("change", render);
+textEl.addEventListener("input", () => { imageMode = null; qrMode = null; render(); });
+$("fontSize").addEventListener("change", () => { saveSettings(); render(); });
+$("bold").addEventListener("change", () => { saveSettings(); render(); });
+$("orient").addEventListener("change", () => { saveSettings(); render(); });
+$("density").addEventListener("change", saveSettings);
+$("margin").addEventListener("change", saveSettings);
 $("imgFile").addEventListener("change", ev => {
   const f = ev.target.files[0];
   if (!f) return;
   const img = new Image();
-  img.onload = () => { imageMode = img; render(); };
+  img.onload = () => { qrMode = null; imageMode = img; render(); };
   img.src = URL.createObjectURL(f);
 });
 $("printBtn").addEventListener("click", doPrint);
 $("feedBtn").addEventListener("click", doFeed);
+$("clearBtn").addEventListener("click", () => {
+  if (!textEl.value && !imageMode && !qrMode) return;
+  if (!confirm("入力内容をすべて削除しますか？")) return;
+  textEl.value = "";
+  imageMode = null;
+  qrMode = null;
+  $("imgFile").value = "";
+  render();
+  setStatus("クリアしました。");
+});
 $("pasteBtn").addEventListener("click", async () => {
   try {
     const t = await navigator.clipboard.readText();
     if (t) {
       imageMode = null;
+      qrMode = null;
       textEl.value = t;
       render();
       setStatus("クリップボードから貼り付けました。", "ok");
@@ -636,9 +789,70 @@ $("pasteBtn").addEventListener("click", async () => {
     setStatus("自動貼り付けできない環境です。入力欄を長押しして「ペースト」してください。");
   }
 });
+$("dateBtn").addEventListener("click", () => {
+  const d = new Date();
+  const p2 = n => String(n).padStart(2, "0");
+  const youbi = "日月火水木金土"[d.getDay()];
+  const s = `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())}(${youbi}) ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  const pos = textEl.selectionStart ?? textEl.value.length;
+  textEl.value = textEl.value.slice(0, pos) + s + textEl.value.slice(textEl.selectionEnd ?? pos);
+  imageMode = null; qrMode = null;
+  render();
+});
+$("template").addEventListener("change", () => {
+  const key = $("template").value;
+  $("template").value = "";
+  if (!key) return;
+  if (textEl.value && !confirm("入力内容を定型文で置き換えますか？")) return;
+  textEl.value = TEMPLATES[key];
+  imageMode = null; qrMode = null;
+  render();
+});
+$("qrBtn").addEventListener("click", () => {
+  const content = textEl.value.trim();
+  if (!content) { setStatus("QR化する内容（URL等）を入力してください。", "err"); return; }
+  qrMode = content;
+  imageMode = null;
+  render();
+  setStatus("QRコードに変換しました。このまま印刷できます。", "ok");
+});
+
+/* ========= 連番印刷 ========= */
+$("seqBtn").addEventListener("click", async () => {
+  const prefix = $("seqPrefix").value;
+  const s = parseInt($("seqStart").value, 10);
+  const e = parseInt($("seqEnd").value, 10);
+  if (isNaN(s) || isNaN(e) || e < s) { setStatus("開始・終了番号を確認してください。", "err"); return; }
+  const count = e - s + 1;
+  if (count > 50) { setStatus("連番は一度に50件までにしてください。", "err"); return; }
+  if (!confirm(`「${prefix}${s}」〜「${prefix}${e}」（${count}件）を印刷しますか？`)) return;
+  const orig = textEl.value, origImg = imageMode, origQr = qrMode;
+  $("seqBtn").disabled = true;
+  $("printBtn").disabled = true;
+  try {
+    await connect();
+    for (let n = s; n <= e; n++) {
+      imageMode = null; qrMode = null;
+      textEl.value = prefix + n;
+      render();
+      setStatus(`送信中… ${prefix}${n}（${n - s + 1}/${count}）`);
+      await sendData(buildPrintData());
+    }
+    setStatus(`連番印刷 ${count}件が完了しました。`, "ok");
+  } catch (err) {
+    setStatus("エラー（" + stage + "）：" + errMsg(err), "err");
+  } finally {
+    textEl.value = orig; imageMode = origImg; qrMode = origQr;
+    render();
+    $("seqBtn").disabled = false;
+    $("printBtn").disabled = false;
+  }
+});
 
 /* ========= 起動時：URLパラメータからテキスト受取（?text= / #text= 両対応・多重エンコード対応） ========= */
 (function init() {
+  loadSettings();
+  renderHistory();
   let raw = new URLSearchParams(location.search).get("text");
   const hasHash = location.hash.startsWith("#text=");
   if (raw === null && hasHash) raw = location.hash.slice(6);
