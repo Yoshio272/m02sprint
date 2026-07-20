@@ -159,11 +159,8 @@
       </div>
       <div class="field">
         <label for="density">濃度</label>
-        <select id="density">
-          <option value="1">薄い</option>
-          <option value="3" selected>標準</option>
-          <option value="5">濃い</option>
-        </select>
+        <input type="range" id="density" min="10" max="100" step="5" value="100" style="width:110px">
+        <span id="densityVal" style="font-size:12px; color:var(--gray-light); min-width:36px">100%</span>
       </div>
       <div class="field">
         <label for="orient">向き</label>
@@ -472,25 +469,32 @@ function updateMeta(h) {
   $("previewMeta").textContent = mode + ` ｜ 印刷長 約${mm}mm`;
 }
 
+// 4x4 Bayerマトリクス（0..15）。順序ディザで黒ドットを均等に間引く
+const BAYER4 = [
+  [ 0,  8,  2, 10],
+  [12,  4, 14,  6],
+  [ 3, 11,  1,  9],
+  [15,  7, 13,  5]
+];
+
 function applyDensityThinning() {
-  // 濃度レベルに応じて黒ドットを間引く（プレビュー＝印刷を一致させる）
-  const level = parseInt($("density").value, 10); // 1..5
-  if (level >= 5) return; // 最大濃度は間引きなし
+  // 濃度％に応じて黒ドットを均等に間引く（プレビュー＝印刷を一致させる）
+  const pct = parseInt($("density").value, 10); // 10..100
+  if (pct >= 100) return; // 100%は間引きなし
   const h = preview.height;
   const img = pctx.getImageData(0, 0, PRINTER_WIDTH, h);
   const d = img.data;
-  // keepフラグ：座標(x,y)の黒を残すか。levelが低いほど残す割合を下げる
-  const keep = (x, y) => {
-    if (level === 4) return !((x + y) % 4 === 0);          // 約75%残す
-    if (level === 3) return (x + y) % 2 === 0;             // 50%（市松）
-    if (level === 2) return (x % 2 === 0) && (y % 2 === 0); // 約25%
-    return ((x % 2 === 0) && (y % 2 === 0)) && ((x + y) % 4 === 0); // 約12%
-  };
+  // threshold：Bayer値(0..15)がこの値以上の画素の黒を残す → 残す割合≒pct%
+  // pct=100で全残し、pct=0で全消し。均等分布。
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < PRINTER_WIDTH; x++) {
       const p = (y * PRINTER_WIDTH + x) * 4;
-      if (d[p] < 128 && !keep(x, y)) {
-        d[p] = d[p+1] = d[p+2] = 255; // 白にして間引く
+      if (d[p] < 128) {
+        const bayer = BAYER4[y & 3][x & 3];        // 0..15
+        const keepRatio = (bayer + 0.5) / 16 * 100; // 3.1..96.9%
+        if (keepRatio > pct) {
+          d[p] = d[p+1] = d[p+2] = 255; // 間引く
+        }
       }
     }
   }
@@ -752,6 +756,7 @@ function loadSettings() {
     const o = JSON.parse(localStorage.getItem("m02s_settings") || "{}");
     SETTING_IDS.forEach(id => { if (o[id] !== undefined) $(id).value = o[id]; });
   } catch (e) {}
+  const dv = $("densityVal"); if (dv) dv.textContent = $("density").value + "%";
 }
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem("m02s_history") || "[]"); }
@@ -799,7 +804,11 @@ textEl.addEventListener("input", () => { imageMode = null; qrMode = null; render
 $("fontSize").addEventListener("change", () => { saveSettings(); render(); });
 $("bold").addEventListener("change", () => { saveSettings(); render(); });
 $("orient").addEventListener("change", () => { saveSettings(); render(); });
-$("density").addEventListener("change", () => { saveSettings(); render(); });
+$("density").addEventListener("input", () => {
+  $("densityVal").textContent = $("density").value + "%";
+  render();
+});
+$("density").addEventListener("change", saveSettings);
 $("margin").addEventListener("change", saveSettings);
 $("imgFile").addEventListener("change", ev => {
   const f = ev.target.files[0];
