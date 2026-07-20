@@ -472,7 +472,35 @@ function updateMeta(h) {
   $("previewMeta").textContent = mode + ` ｜ 印刷長 約${mm}mm`;
 }
 
-function render() { qrMode ? renderQR() : (imageMode ? renderImage() : renderText()); }
+function applyDensityThinning() {
+  // 濃度レベルに応じて黒ドットを間引く（プレビュー＝印刷を一致させる）
+  const level = parseInt($("density").value, 10); // 1..5
+  if (level >= 5) return; // 最大濃度は間引きなし
+  const h = preview.height;
+  const img = pctx.getImageData(0, 0, PRINTER_WIDTH, h);
+  const d = img.data;
+  // keepフラグ：座標(x,y)の黒を残すか。levelが低いほど残す割合を下げる
+  const keep = (x, y) => {
+    if (level === 4) return !((x + y) % 4 === 0);          // 約75%残す
+    if (level === 3) return (x + y) % 2 === 0;             // 50%（市松）
+    if (level === 2) return (x % 2 === 0) && (y % 2 === 0); // 約25%
+    return ((x % 2 === 0) && (y % 2 === 0)) && ((x + y) % 4 === 0); // 約12%
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < PRINTER_WIDTH; x++) {
+      const p = (y * PRINTER_WIDTH + x) * 4;
+      if (d[p] < 128 && !keep(x, y)) {
+        d[p] = d[p+1] = d[p+2] = 255; // 白にして間引く
+      }
+    }
+  }
+  pctx.putImageData(img, 0, 0);
+}
+
+function render() {
+  qrMode ? renderQR() : (imageMode ? renderImage() : renderText());
+  applyDensityThinning();
+}
 
 /* ========= ESC/POS データ生成 ========= */
 function buildPrintData() {
@@ -481,18 +509,10 @@ function buildPrintData() {
   const d = img.data;
   const bytes = [];
 
-  // ヘッダ：初期化・濃度設定（M02Sで効く形式が機種差あるため複数形式を送出。無効な形式は無視される）
-  const level = parseInt($("density").value, 10);   // 1..5
+  // ヘッダ：初期化・濃度は中程度固定（濃淡はプレビュー段階のドット間引きで表現＝印刷と一致）
   bytes.push(0x1B, 0x40);                            // ESC @ 初期化
-  // 形式A：Phomemo系 濃度係数(0x37)。levelを0x60〜0xC0程度にマップ
-  const energyA = Math.max(0x30, Math.min(0xFF, 0x40 + level * 0x28));
-  bytes.push(0x1F, 0x11, 0x37, energyA);
-  // 形式B：印字濃度(0x02)
-  bytes.push(0x1F, 0x11, 0x02, level);
-  // 形式C：ESC/POS 印字濃度 GS ( K（一部感熱機で有効）
-  bytes.push(0x1D, 0x28, 0x4B, 0x02, 0x00, 0x31, Math.min(0xFF, level * 0x28));
-  // 形式D：DC2 # n（濃度段階）
-  bytes.push(0x12, 0x23, Math.min(0x0F, level));
+  bytes.push(0x1F, 0x11, 0x37, 0x90);
+  bytes.push(0x1F, 0x11, 0x02, 0x03);
 
   // 上余白 約1cm（先頭に空白ラスターを1ブロック入れる。feedより確実に紙頭に余白が付く）
   const TOP_MARGIN = 120; // 120dot ≒ 1cm @300dpi(12dot/mm)
@@ -779,7 +799,7 @@ textEl.addEventListener("input", () => { imageMode = null; qrMode = null; render
 $("fontSize").addEventListener("change", () => { saveSettings(); render(); });
 $("bold").addEventListener("change", () => { saveSettings(); render(); });
 $("orient").addEventListener("change", () => { saveSettings(); render(); });
-$("density").addEventListener("change", saveSettings);
+$("density").addEventListener("change", () => { saveSettings(); render(); });
 $("margin").addEventListener("change", saveSettings);
 $("imgFile").addEventListener("change", ev => {
   const f = ev.target.files[0];
